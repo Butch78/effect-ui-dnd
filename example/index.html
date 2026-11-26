@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>effect-ui-dnd</title>
+    <style>
+      body { font: 16px system-ui, sans-serif; margin: 2rem; color: #1f2328; }
+      .board { max-width: 28rem; }
+      .tasks { list-style: none; padding: 0; margin: 0 0 1rem; }
+      .task { padding: .75rem 1rem; margin: 0 0 .5rem; border: 1px solid #d0d7de; border-radius: 8px; background: #fff; cursor: grab; user-select: none; touch-action: none; }
+      .task[data-dragging] { opacity: .4; }
+      .task:focus-visible { outline: 2px solid #0969da; outline-offset: 2px; }
+      .task[data-placement="before"] { box-shadow: 0 -3px 0 #0969da; }
+      .task[data-placement="after"] { box-shadow: 0 3px 0 #0969da; }
+      .preview { opacity: .95; box-shadow: 0 8px 24px rgb(0 0 0 / .15); margin: 0; }
+      .bin { padding: 1.5rem; border: 2px dashed #d0d7de; border-radius: 8px; text-align: center; }
+      .bin[data-over] { border-color: #cf222e; background: #ffebe9; }
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="./main.ts"></script>
+  </body>
+</html>
