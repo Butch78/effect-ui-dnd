@@ -7,8 +7,10 @@ import "./styles.css";
 
 const ITEM = "[data-dnd-item]";
 const places = new Map<string, DOMRect>();
-// The item a drag just let go of: it already sits under the pointer.
-let released: string | null = null;
+// The item a pointer just let go of, and where it was on screen at that
+// moment: under the pointer, as the preview or as the item itself. It glides
+// from there, not from the place it was picked up.
+let dropped: { readonly id: string; readonly from: DOMRect } | null = null;
 
 const remember = () => {
   places.clear();
@@ -23,10 +25,9 @@ const remember = () => {
 const glide = () => {
   for (const element of document.querySelectorAll<HTMLElement>(ITEM)) {
     const id = element.getAttribute("data-dnd-item");
-    const before = id === null ? undefined : places.get(id);
+    const before = id === null ? undefined : id === dropped?.id ? dropped.from : places.get(id);
 
-    if (id === null || before === undefined || id === released || element.style.transform !== "")
-      continue;
+    if (id === null || before === undefined || element.style.transform !== "") continue;
 
     const after = element.getBoundingClientRect();
     const dx = before.left - after.left;
@@ -41,20 +42,24 @@ const glide = () => {
       },
     );
   }
-  released = null;
+  dropped = null;
   remember();
 };
 
-// Items added, removed or moved: glide them. A row that followed the pointer
-// is skipped, and so is every move a scroll caused.
+// Items added, removed or moved: glide them. A scroll moves nothing.
 new MutationObserver(glide).observe(document.body, { childList: true, subtree: true });
 document.addEventListener("scroll", remember, { capture: true, passive: true });
 document.addEventListener(
   "pointerup",
   () => {
-    released = document.querySelector<HTMLElement>(`${ITEM}[data-dragging]`)?.style.transform
-      ? (document.querySelector(`${ITEM}[data-dragging]`)?.getAttribute("data-dnd-item") ?? null)
-      : null;
+    const held = document.querySelector<HTMLElement>(`${ITEM}[data-dragging]`);
+    const id = held?.getAttribute("data-dnd-item");
+    const preview = document.querySelector<HTMLElement>(".preview");
+
+    dropped =
+      held === null || id === null || id === undefined
+        ? null
+        : { id, from: (preview ?? held).getBoundingClientRect() };
   },
   { capture: true },
 );
