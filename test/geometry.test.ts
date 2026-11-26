@@ -123,3 +123,30 @@ describe('targetAt with a clipped zone', () => {
     expect(targetAt({ x: 10, y: 95 }, [row])).toEqual({ zone: 'c', placement: 'before' })
   })
 })
+
+describe('targetAt in a column of cards', () => {
+  // A column from 0 to 300 holding cards at 10-50 and 60-100; the rest of
+  // the column is empty.
+  const column: ZoneBox = box('todo', 0, 0, 200, 300)
+  const card = (id: string, top: number): ZoneBox => ({ ...box(id, 10, top, 180, 40, 'vertical'), parent: 'todo' })
+  const zones = [column, card('one', 10), card('two', 60)]
+
+  it('sends a drop in the gap between two cards to the nearest card', () => {
+    expect(targetAt({ x: 100, y: 54 }, zones)).toEqual({ zone: 'one', placement: 'after' })
+    expect(targetAt({ x: 100, y: 57 }, zones)).toEqual({ zone: 'two', placement: 'before' })
+  })
+
+  it('sends a drop below the last card to after it', () => {
+    expect(targetAt({ x: 100, y: 250 }, zones)).toEqual({ zone: 'two', placement: 'after' })
+  })
+
+  it('drops inside a column with no cards', () => {
+    expect(targetAt({ x: 100, y: 250 }, [column])).toEqual({ zone: 'todo', placement: 'inside' })
+  })
+
+  it('ignores the cards of another column', () => {
+    const other: ZoneBox = { ...box('far', 500, 10, 180, 40, 'vertical'), parent: 'done' }
+
+    expect(targetAt({ x: 100, y: 250 }, [column, other])).toEqual({ zone: 'todo', placement: 'inside' })
+  })
+})

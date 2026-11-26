@@ -16,7 +16,7 @@ pnpm add github:Butch78/effect-ui-dnd
 `DragArea` is a headless component: you draw the markup, it adds the behaviour. Items and zones carry string ids, and a finished drop arrives as a `Dropped` event with the item, the zone and the placement (`before`, `after` or `inside`). A zone with an axis is one entry of a sortable list; `reorder` turns a drop on it into the new order.
 
 ```ts
-import { DragArea, reorder } from "effect-ui-dnd";
+import { DragArea, moveBetween, reorder } from "effect-ui-dnd";
 
 DragArea(h, {
   props: { labels: { write: "Write the brief", bin: "the bin" } },
@@ -42,11 +42,18 @@ DragArea(h, {
       ),
 });
 
-// In update:
+// In update, for one list:
 DroppedTask: ($, drop) => $.evolve({ order: (order) => reorder(order, drop) });
+
+// Or for a board, where items move between lists such as columns:
+DroppedCard: ($, drop) => $.evolve({ columns: (columns) => moveBetween(columns, drop) })
 ```
 
 `example/main.ts` is a complete page: `pnpm example`.
+
+### Boards
+
+Put sortable zones inside plain zones: a column is `zone(h.section, "todo")`, each card in it `zone(item(h.article, id), id, "vertical")`. A drop anywhere in a column lands before or after its nearest card, and a column with no cards takes it inside. `moveBetween(lists, drop)` turns that into the new lists. `example/board.ts` is a three-column board.
 
 ## Parts
 

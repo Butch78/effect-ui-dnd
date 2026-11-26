@@ -36,6 +36,8 @@ export interface ZoneBox {
   readonly axis: Axis | null
   /** The part not clipped by a scrolling pane around it. Defaults to `rect`. */
   readonly visible?: Rect
+  /** The id of the zone around this one, such as the column around a card. */
+  readonly parent?: string | null
 }
 
 /** The part of `rect` inside `by`, or null when they do not overlap. */
@@ -94,7 +96,26 @@ export const targetAt = (point: Point, zones: ReadonlyArray<ZoneBox>, collision:
     }
   }
 
-  return best === null ? null : { zone: best.id, placement: placementIn(best, point) }
+  if (best === null) return null
+
+  // A plain zone that holds sortable zones, such as a column of cards, sends
+  // the drop before or after its nearest card, so the gaps between cards
+  // still place the item. An empty one takes it inside.
+  if (best.axis === null) {
+    const holder: ZoneBox = best
+    let nearest: ZoneBox | null = null
+
+    for (const zone of zones) {
+      if (zone.parent !== holder.id || zone.axis === null) continue
+      if (nearest === null || distanceToCentre(visibleOf(zone), point) < distanceToCentre(visibleOf(nearest), point)) {
+        nearest = zone
+      }
+    }
+
+    if (nearest !== null) best = nearest
+  }
+
+  return { zone: best.id, placement: placementIn(best, point) }
 }
 
 // Speed along one axis: none outside `edge` of either end, rising to `max`

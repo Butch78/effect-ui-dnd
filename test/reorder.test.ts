@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { reorder } from '../src/reorder.ts'
+import { moveBetween, reorder } from '../src/reorder.ts'
 
 const ids = ['a', 'b', 'c', 'd']
 
@@ -25,5 +25,58 @@ describe('reorder', () => {
     expect(reorder(ids, { item: 'x', zone: 'a', placement: 'before' })).toBe(ids)
     expect(reorder(ids, { item: 'a', zone: 'x', placement: 'before' })).toBe(ids)
     expect(reorder(ids, { item: 'a', zone: 'c', placement: 'inside' })).toBe(ids)
+  })
+})
+
+describe('moveBetween', () => {
+  const board = { todo: ['a', 'b'], doing: ['c'], done: [] as Array<string> }
+
+  it('moves an item onto a card in another list, before or after it', () => {
+    expect(moveBetween(board, { item: 'a', zone: 'c', placement: 'before' })).toEqual({
+      todo: ['b'],
+      doing: ['a', 'c'],
+      done: [],
+    })
+    expect(moveBetween(board, { item: 'a', zone: 'c', placement: 'after' })).toEqual({
+      todo: ['b'],
+      doing: ['c', 'a'],
+      done: [],
+    })
+  })
+
+  it('moves an item into a list, at its end', () => {
+    expect(moveBetween(board, { item: 'b', zone: 'done', placement: 'inside' })).toEqual({
+      todo: ['a'],
+      doing: ['c'],
+      done: ['b'],
+    })
+    expect(moveBetween(board, { item: 'a', zone: 'doing', placement: 'inside' })).toEqual({
+      todo: ['b'],
+      doing: ['c', 'a'],
+      done: [],
+    })
+  })
+
+  it('reorders within one list', () => {
+    expect(moveBetween(board, { item: 'a', zone: 'b', placement: 'after' })).toEqual({
+      todo: ['b', 'a'],
+      doing: ['c'],
+      done: [],
+    })
+  })
+
+  it('returns the lists themselves when nothing moves', () => {
+    expect(moveBetween(board, { item: 'a', zone: 'a', placement: 'before' })).toBe(board)
+    expect(moveBetween(board, { item: 'a', zone: 'b', placement: 'before' })).toBe(board)
+    expect(moveBetween(board, { item: 'x', zone: 'done', placement: 'inside' })).toBe(board)
+    expect(moveBetween(board, { item: 'a', zone: 'nowhere', placement: 'inside' })).toBe(board)
+  })
+
+  it('moves an item dropped inside its own list to the end of it', () => {
+    expect(moveBetween(board, { item: 'a', zone: 'todo', placement: 'inside' })).toEqual({
+      todo: ['b', 'a'],
+      doing: ['c'],
+      done: [],
+    })
   })
 })

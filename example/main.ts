@@ -25,6 +25,8 @@ const tasks: ReadonlyArray<Task> = [
   "Book the photo shoot",
 ].map((title) => ({ id: title.toLowerCase().replaceAll(" ", "-"), title }));
 
+const keyOf = (id: string) => `NW-${101 + tasks.findIndex((task) => task.id === id)}`;
+
 const locked = "plan-the-quarter";
 
 const Message = UiSchema.TaggedEnum({
@@ -67,8 +69,10 @@ const Board = Html.component({
           ? Message.DroppedTask({ item: event.item, zone: event.zone, placement: event.placement })
           : Message.PutBackTask(),
       view: (dragArea) =>
-        dragArea.root(h.main.class("board")).children(
-          h.h1.children("Tasks"),
+        dragArea.root(h.main.class("list")).children(
+          h.div
+            .class("section-head")
+            .children(h.h1.children("Backlog"), h.span.class("count").children(String(model.order.length))),
           h.div.class("pane").children(
             h.ul.class("tasks").children(
               model.order.map((id) =>
@@ -84,12 +88,13 @@ const Board = Html.component({
                       .handle(h.span.class("grip"), id)
                       .attr("aria-label", `Move ${titleOf(id)}`)
                       .children("⠿"),
+                    h.span.class("key").children(keyOf(id)),
                     h.span.class("title").children(titleOf(id)),
                   ),
               ),
             ),
           ),
-          dragArea.zone(h.section.class("bin"), "bin").children(`Bin (${model.binned.length})`),
+          dragArea.zone(h.section.class("bin"), "bin").children(`Archive · ${model.binned.length}`),
           dragArea.announcer(h.div),
           dragArea.instructions(h.div),
         ),

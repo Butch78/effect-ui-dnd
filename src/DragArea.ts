@@ -316,7 +316,11 @@ const zonesIn = (root: HTMLElement, held: HTMLElement): Array<ZoneBox> =>
 
     if (visible === null) return []
 
-    return [{ id, rect, visible, axis: axis === 'vertical' || axis === 'horizontal' ? axis : null }]
+    // The zone around this one, such as a card's column.
+    const holder = element.parentElement?.closest<HTMLElement>(`[${ZONE}]`)
+    const parent = holder !== null && holder !== undefined && root.contains(holder) ? holder.getAttribute(ZONE) : null
+
+    return [{ id, rect, visible, parent, axis: axis === 'vertical' || axis === 'horizontal' ? axis : null }]
   })
 
 /**
