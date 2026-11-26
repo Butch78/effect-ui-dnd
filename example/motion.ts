@@ -12,13 +12,27 @@ const places = new Map<string, DOMRect>();
 // from there, not from the place it was picked up.
 let dropped: { readonly id: string; readonly from: DOMRect } | null = null;
 
+// Where an element sits, without the slide it may be in the middle of: a
+// rect read during an animation includes its offset, and remembering that
+// would replay the slide on the next change.
+const restingRect = (element: HTMLElement): DOMRect => {
+  const rect = element.getBoundingClientRect();
+  const transform = getComputedStyle(element).transform;
+
+  if (transform === "none" || transform === "") return rect;
+
+  const { e, f } = new DOMMatrixReadOnly(transform);
+
+  return new DOMRect(rect.left - e, rect.top - f, rect.width, rect.height);
+};
+
 const remember = () => {
   places.clear();
   for (const element of document.querySelectorAll<HTMLElement>(ITEM)) {
     const id = element.getAttribute("data-dnd-item");
 
     if (id !== null && element.style.transform === "")
-      places.set(id, element.getBoundingClientRect());
+      places.set(id, restingRect(element));
   }
 };
 
@@ -29,7 +43,7 @@ const glide = () => {
 
     if (id === null || before === undefined || element.style.transform !== "") continue;
 
-    const after = element.getBoundingClientRect();
+    const after = restingRect(element);
     const dx = before.left - after.left;
     const dy = before.top - after.top;
 
