@@ -2,6 +2,10 @@
 
 Drag and drop for [Effect UI](https://github.com/Effect-TS/ui), by mouse, touch and keyboard: drop zones and sortable lists, with screen reader announcements. Effect v4, headless, no other dependencies.
 
+![A board and a list: cards move between columns, rows reorder by their grip, the list scrolls near its edge, and the keyboard moves cards too](docs/demo.gif)
+
+The [full-quality video](docs/demo.mp4) is in `docs/`. The page is `example/`: `pnpm example` serves it.
+
 Status: early. Effect UI itself is a public preview and not on npm yet, so this package follows its snapshots.
 
 ## Install
