@@ -34,7 +34,21 @@ export interface ZoneBox {
   readonly id: string
   readonly rect: Rect
   readonly axis: Axis | null
+  /** The part not clipped by a scrolling pane around it. Defaults to `rect`. */
+  readonly visible?: Rect
 }
+
+/** The part of `rect` inside `by`, or null when they do not overlap. */
+export const clip = (rect: Rect, by: Rect): Rect | null => {
+  const left = Math.max(rect.left, by.left)
+  const top = Math.max(rect.top, by.top)
+  const right = Math.min(rect.left + rect.width, by.left + by.width)
+  const bottom = Math.min(rect.top + rect.height, by.top + by.height)
+
+  return right > left && bottom > top ? { left, top, width: right - left, height: bottom - top } : null
+}
+
+const visibleOf = (zone: ZoneBox): Rect => zone.visible ?? zone.rect
 
 const contains = (rect: Rect, point: Point): boolean =>
   point.x >= rect.left && point.x < rect.left + rect.width && point.y >= rect.top && point.y < rect.top + rect.height
@@ -49,19 +63,71 @@ const placementIn = (zone: ZoneBox, point: Point): Placement => {
 }
 
 /**
- * The target under `point`. Where zones nest, the smallest one that holds the
+ * How a drag finds its target. `pointer`: the zone under the pointer, or none.
+ * `closest`: the zone under the pointer, else the zone whose centre is
+ * nearest, so the gaps between the rows of a list still take a drop.
+ */
+export const Collision = Schema.Literals(['pointer', 'closest'])
+export type Collision = typeof Collision.Type
+
+const distanceToCentre = (rect: Rect, point: Point): number =>
+  Math.hypot(rect.left + rect.width / 2 - point.x, rect.top + rect.height / 2 - point.y)
+
+/**
+ * The target for `point`. Where zones nest, the smallest one that holds the
  * point wins, so a card list inside a board column takes the drop before the
  * column does.
  */
-export const targetAt = (point: Point, zones: ReadonlyArray<ZoneBox>): Target | null => {
+export const targetAt = (point: Point, zones: ReadonlyArray<ZoneBox>, collision: Collision = 'pointer'): Target | null => {
   let best: ZoneBox | null = null
 
   for (const zone of zones) {
-    if (!contains(zone.rect, point)) continue
+    if (!contains(visibleOf(zone), point)) continue
     if (best === null || area(zone.rect) < area(best.rect)) best = zone
   }
 
+  if (best === null && collision === 'closest') {
+    for (const zone of zones) {
+      if (best === null || distanceToCentre(visibleOf(zone), point) < distanceToCentre(visibleOf(best), point)) {
+        best = zone
+      }
+    }
+  }
+
   return best === null ? null : { zone: best.id, placement: placementIn(best, point) }
+}
+
+// Speed along one axis: none outside `edge` of either end, rising to `max`
+// at the end and staying at `max` past it.
+const speedAlong = (at: number, start: number, length: number, edge: number, max: number): number => {
+  const fromStart = at - start
+  const fromEnd = start + length - at
+
+  if (fromStart < edge) return -max * (1 - Math.max(0, fromStart) / edge)
+  if (fromEnd < edge) return max * (1 - Math.max(0, fromEnd) / edge)
+
+  return 0
+}
+
+/**
+ * Pixels per frame to scroll `pane` while the pointer is at `point`: towards
+ * an edge the pointer is within `edge` pixels of, up to `max`. A pointer up to
+ * `edge` pixels outside the pane still scrolls it, at full speed; one further
+ * away has left it.
+ */
+export const scrollSpeed = (point: Point, pane: Rect, edge: number, max: number): Point => {
+  const near =
+    point.x >= pane.left - edge &&
+    point.x <= pane.left + pane.width + edge &&
+    point.y >= pane.top - edge &&
+    point.y <= pane.top + pane.height + edge
+
+  if (!near) return { x: 0, y: 0 }
+
+  return {
+    x: speedAlong(point.x, pane.left, pane.width, edge, max),
+    y: speedAlong(point.y, pane.top, pane.height, edge, max),
+  }
 }
 
 /** Whether the pointer has moved far enough from where it was pressed to start a drag. */

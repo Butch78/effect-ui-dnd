@@ -1,5 +1,7 @@
-// A sortable list and a bin, to try DragArea by mouse, touch and keyboard:
-// `pnpm example` serves it, `pnpm example:build` builds it.
+// A sortable list in a scrolling pane, and a bin, to try DragArea by mouse,
+// touch and keyboard: `pnpm example` serves it, `pnpm example:build` builds it.
+// Rows drag by their grip, move themselves, target the nearest row in the
+// gaps, and scroll the pane near its edges. "Plan the quarter" is locked.
 import { UiSchema } from "@effect/ui";
 import { BrowserHost, Html } from "@effect/ui/html";
 import { Effect, Layer, Schema } from "effect";
@@ -9,11 +11,21 @@ const Task = Schema.Struct({ id: Schema.String, title: Schema.String });
 interface Task extends Schema.Schema.Type<typeof Task> {}
 
 const tasks: ReadonlyArray<Task> = [
-  { id: "write", title: "Write the brief" },
-  { id: "review", title: "Review the draft" },
-  { id: "publish", title: "Publish the post" },
-  { id: "measure", title: "Measure the results" },
-];
+  "Plan the quarter",
+  "Write the brief",
+  "Review the draft",
+  "Publish the post",
+  "Measure the results",
+  "Answer the comments",
+  "Update the calendar",
+  "Brief the designer",
+  "Check the analytics",
+  "Archive old posts",
+  "Send the newsletter",
+  "Book the photo shoot",
+].map((title) => ({ id: title.toLowerCase().replaceAll(" ", "-"), title }));
+
+const locked = "plan-the-quarter";
 
 const Message = UiSchema.TaggedEnum({
   DroppedTask: { item: Schema.String, zone: Schema.String, placement: Schema.String },
@@ -47,6 +59,8 @@ const Board = Html.component({
           ...tasks.map((task) => [task.id, task.title]),
           ["bin", "the bin"],
         ]),
+        collision: "closest",
+        follow: "item",
       },
       onEmit: (event) =>
         event._tag === "Dropped"
@@ -55,18 +69,27 @@ const Board = Html.component({
       view: (dragArea) =>
         dragArea.root(h.main.class("board")).children(
           h.h1.children("Tasks"),
-          h.ul.class("tasks").children(
-            model.order.map((id) =>
-              dragArea
-                .zone(dragArea.item(h.li.key(id), id), id, "vertical")
-                .class("task")
-                .children(titleOf(id)),
+          h.div.class("pane").children(
+            h.ul.class("tasks").children(
+              model.order.map((id) =>
+                dragArea
+                  .zone(
+                    dragArea.item(h.li.key(id), id, { handle: true, disabled: id === locked }),
+                    id,
+                    "vertical",
+                  )
+                  .class("task")
+                  .children(
+                    dragArea
+                      .handle(h.span.class("grip"), id)
+                      .attr("aria-label", `Move ${titleOf(id)}`)
+                      .children("⠿"),
+                    h.span.class("title").children(titleOf(id)),
+                  ),
+              ),
             ),
           ),
           dragArea.zone(h.section.class("bin"), "bin").children(`Bin (${model.binned.length})`),
-          dragArea.via === "pointer" && dragArea.dragging !== null
-            ? dragArea.preview(h.div.class("task preview")).children(titleOf(dragArea.dragging))
-            : h.span,
           dragArea.announcer(h.div),
           dragArea.instructions(h.div),
         ),

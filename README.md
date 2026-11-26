@@ -50,28 +50,34 @@ DroppedTask: ($, drop) => $.evolve({ order: (order) => reorder(order, drop) });
 
 ## Parts
 
-| Part           | Use                                                                 |
-| -------------- | ------------------------------------------------------------------- |
-| `root`         | holds every item and zone; listens for presses and keys             |
-| `item`         | a draggable element, by id; focusable, with ARIA for screen readers |
-| `zone`         | a drop target, by id; give it an axis to make it a sortable entry   |
-| `preview`      | the floating copy under the pointer, sized like the item            |
-| `announcer`    | a visually hidden live region that says what is happening           |
-| `instructions` | visually hidden keyboard instructions the items point to            |
+| Part           | Use                                                                                     |
+| -------------- | --------------------------------------------------------------------------------------- |
+| `root`         | holds every item and zone; listens for presses and keys                                 |
+| `item`         | a draggable element, by id: `item(h.li, id, { handle?, disabled? })`                    |
+| `handle`       | with `{ handle: true }`, the only place the item drags from; it takes focus and keys    |
+| `zone`         | a drop target, by id; `zone(h.li, id, "vertical")` makes it one entry of a sorted list  |
+| `preview`      | the floating copy under the pointer, sized like the item                                |
+| `announcer`    | a visually hidden live region that says what is happening                               |
+| `instructions` | visually hidden keyboard instructions the items point to                                |
 
 The parts also return `dragging` (the item id or `null`), `over` (the target under it) and `via` (`"pointer"` or `"keyboard"`).
 
-Style with data attributes: `data-dragging` on the root and the dragged item, `data-over` and `data-placement` on the zone under the drag.
+Style with data attributes: `data-dragging` on the root and the dragged item, `data-over` and `data-placement` on the zone under the drag, `data-dnd-disabled` on a disabled item.
 
 ## Props
 
-| Prop         | Default | Meaning                                                                   |
-| ------------ | ------- | ------------------------------------------------------------------------- |
-| `distance`   | `8`     | pixels a mouse or pen moves before a press becomes a drag                 |
-| `pressDelay` | `0`     | milliseconds a finger holds still before a touch drags; a swipe scrolls   |
-| `labels`     | none    | spoken names of items and zones, by id                                    |
-| `phrases`    | English | what the screen reader hears; `{item}` and `{zone}` take the spoken names |
-| `disabled`   | `false` | no drags; a drag under way is put back                                    |
+| Prop         | Default     | Meaning                                                                                                                   |
+| ------------ | ----------- | ------------------------------------------------------------------------------------------------------------------------- |
+| `distance`   | `8`         | pixels a mouse or pen moves before a press becomes a drag                                                                 |
+| `pressDelay` | `0`         | milliseconds a finger holds still before a touch drags; a swipe still scrolls                                             |
+| `collision`  | `"pointer"` | `"pointer"`: the zone under the pointer, or none. `"closest"`: else the nearest zone, so gaps between rows still drop     |
+| `follow`     | `"preview"` | `"preview"`: you draw `preview`. `"item"`: the item itself moves with the pointer (it stays clipped by its scrolling pane) |
+| `autoScroll` | `true`      | scroll the panes around the drag, and the page, while the pointer holds near their edges                                  |
+| `labels`     | none        | spoken names of items and zones, by id                                                                                    |
+| `phrases`    | English     | what the screen reader hears; `{item}` and `{zone}` take the spoken names                                                 |
+| `disabled`   | `false`     | no drags; a drag under way is put back                                                                                    |
+
+Zones scrolled out of view inside a pane do not take drops. While a press is held, the browser's own drag of selected text or images is blocked, and the selection is cleared when the drag starts.
 
 ## Keyboard
 

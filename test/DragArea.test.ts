@@ -17,9 +17,18 @@ const Message = UiSchema.TaggedEnum({
   PutBack: { item: Schema.String },
 });
 
+const PageProps = Schema.Struct({
+    pressDelay: Schema.optional(Schema.Finite),
+    collision: Schema.optional(Schema.Literals(["pointer", "closest"])),
+    follow: Schema.optional(Schema.Literals(["preview", "item"])),
+    autoScroll: Schema.optional(Schema.Boolean),
+    handles: Schema.optional(Schema.Boolean),
+    locked: Schema.optional(Schema.String),
+})
+
 const Page = Html.component({
   name: "Page",
-  props: Schema.Struct({ pressDelay: Schema.optional(Schema.Finite) }),
+  props: PageProps,
   model: Schema.Struct({ order: Schema.Array(Schema.String), log: Schema.Array(Schema.String) }),
   message: Message,
 }).make({
@@ -41,6 +50,9 @@ const Page = Html.component({
         props: {
           labels: { a: "Alpha", b: "Beta", c: "Gamma", trash: "the bin" },
           pressDelay: h.props.pressDelay,
+          collision: h.props.collision,
+          follow: h.props.follow,
+          autoScroll: h.props.autoScroll,
         },
         onEmit: (event) =>
           event._tag === "Dropped"
@@ -48,12 +60,26 @@ const Page = Html.component({
             : Message.PutBack({ item: event.item }),
         view: (dragArea) =>
           dragArea.root(h.div.class("area")).children(
-            h.ul.children(
-              model.order.map((id) =>
-                dragArea
-                  .zone(dragArea.item(h.li.key(id), id), id, "vertical")
-                  .class(`row row-${id}`)
-                  .children(id),
+            h.div.class("pane").attr("style", "overflow-y:auto").children(
+              h.ul.children(
+                model.order.map((id) =>
+                  dragArea
+                    .zone(
+                      dragArea.item(h.li.key(id), id, {
+                        handle: h.props.handles === true,
+                        disabled: h.props.locked === id,
+                      }),
+                      id,
+                      "vertical",
+                    )
+                    .class(`row row-${id}`)
+                    .children(
+                      h.props.handles === true
+                        ? dragArea.handle(h.span.class(`grip grip-${id}`), id).children("grip")
+                        : h.span,
+                      h.span.children(id),
+                    ),
+                ),
               ),
             ),
             dragArea.zone(h.div.class("trash"), "trash").children("Trash"),
@@ -77,10 +103,15 @@ const layOut = (app: HTMLElement) => {
     DOMRect.fromRect({ x: left, y: top, width, height });
 
   app.querySelectorAll<HTMLElement>(".row").forEach((row) => {
-    const index = ["a", "b", "c"].indexOf(row.textContent ?? "");
+    const index = ["a", "b", "c"].indexOf(row.getAttribute("data-dnd-item") ?? "");
 
     row.getBoundingClientRect = rect(0, index * 40, 200, 40);
   });
+
+  // The pane scrolls, so it clips the rows: it shows all three.
+  const pane = app.querySelector<HTMLElement>(".pane");
+
+  if (pane !== null) pane.getBoundingClientRect = rect(0, 0, 200, 120);
 
   const trash = app.querySelector<HTMLElement>(".trash");
 
@@ -106,13 +137,13 @@ const key = (target: EventTarget, name: string) =>
   );
 
 const rowsOf = (app: HTMLElement) =>
-  Array.from(app.querySelectorAll(".row")).map((row) => row.textContent);
+  Array.from(app.querySelectorAll(".row")).map((row) => row.getAttribute("data-dnd-item"));
 const logOf = (app: HTMLElement) =>
   Array.from(app.querySelectorAll(".log li")).map((line) => line.textContent);
 const textOf = (app: HTMLElement, selector: string) =>
   app.querySelector(selector)?.textContent ?? null;
 
-const mounted = (props: { readonly pressDelay?: number } = {}) =>
+const mounted = (props: typeof PageProps.Type = {}) =>
   Effect.gen(function* () {
     const app = yield* container;
 
@@ -234,6 +265,34 @@ describe("DragArea by pointer", () => {
   );
 });
 
+describe("DragArea and the browser's own dragging", () => {
+  it.effect("a press stops the browser starting a native drag of selected text, and clears the selection on drag", () =>
+    Effect.gen(function* () {
+      const app = yield* mounted();
+      const rowA = app.querySelector(".row-a")!;
+      const nativeDrag = () => new Event("dragstart", { bubbles: true, cancelable: true });
+      const untouched = nativeDrag();
+
+      rowA.dispatchEvent(untouched);
+      assert.strictEqual(untouched.defaultPrevented, false);
+
+      document.getSelection()?.selectAllChildren(app);
+      pointer(rowA, "pointerdown", 10, 10);
+
+      const during = nativeDrag();
+
+      rowA.dispatchEvent(during);
+      assert.strictEqual(during.defaultPrevented, true);
+      pointer(document, "pointermove", 10, 110);
+      yield* tick;
+      assert.strictEqual(document.getSelection()?.toString(), "");
+      pointer(document, "pointerup", 10, 110);
+      yield* tick;
+      assert.deepStrictEqual(logOf(app), ["dropped a after c"]);
+    }).pipe(Effect.scoped),
+  );
+});
+
 describe("DragArea by keyboard", () => {
   it.effect("Space picks up, arrows move one place at a time, Space drops", () =>
     Effect.gen(function* () {
@@ -290,6 +349,173 @@ describe("DragArea by keyboard", () => {
       yield* tick;
       assert.deepStrictEqual(logOf(app), ["put back b"]);
       assert.deepStrictEqual(rowsOf(app), ["a", "b", "c"]);
+    }).pipe(Effect.scoped),
+  );
+});
+
+describe("DragArea options", () => {
+  it.effect("collision closest drops in the gap between the list and the bin on the nearest row", () =>
+    Effect.gen(function* () {
+      const app = yield* mounted({ collision: "closest" });
+
+      pointer(app.querySelector(".row-a")!, "pointerdown", 10, 10);
+      pointer(document, "pointermove", 10, 150);
+      pointer(document, "pointerup", 10, 150);
+      yield* tick;
+      assert.deepStrictEqual(logOf(app), ["dropped a after c"]);
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("the default collision puts an item back when dropped in that gap", () =>
+    Effect.gen(function* () {
+      const app = yield* mounted();
+
+      pointer(app.querySelector(".row-a")!, "pointerdown", 10, 10);
+      pointer(document, "pointermove", 10, 150);
+      pointer(document, "pointerup", 10, 150);
+      yield* tick;
+      assert.deepStrictEqual(logOf(app), ["put back a"]);
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("follow item moves the dragged item itself with the pointer", () =>
+    Effect.gen(function* () {
+      const app = yield* mounted({ follow: "item" });
+      const rowA = app.querySelector<HTMLElement>(".row-a")!;
+
+      pointer(rowA, "pointerdown", 10, 10);
+      pointer(document, "pointermove", 10, 110);
+      yield* tick;
+      assert.match(rowA.style.transform, /^translate3d\(0px, ?100px, ?0(px)?\)$/);
+      pointer(document, "pointerup", 10, 110);
+      yield* tick;
+      assert.strictEqual(app.querySelector<HTMLElement>(".row-a")?.style.transform, "");
+      assert.deepStrictEqual(logOf(app), ["dropped a after c"]);
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("with a handle, only a press on the handle drags", () =>
+    Effect.gen(function* () {
+      const app = yield* mounted({ handles: true });
+
+      pointer(app.querySelector(".row-a span:last-child")!, "pointerdown", 10, 10);
+      pointer(document, "pointermove", 10, 110);
+      pointer(document, "pointerup", 10, 110);
+      yield* tick;
+      assert.deepStrictEqual(logOf(app), []);
+
+      pointer(app.querySelector(".grip-a")!, "pointerdown", 10, 10);
+      pointer(document, "pointermove", 10, 110);
+      pointer(document, "pointerup", 10, 110);
+      yield* tick;
+      assert.deepStrictEqual(logOf(app), ["dropped a after c"]);
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("with a handle, the handle takes focus and the keyboard", () =>
+    Effect.gen(function* () {
+      const app = yield* mounted({ handles: true });
+      const rowA = app.querySelector<HTMLElement>(".row-a")!;
+      const grip = app.querySelector<HTMLElement>(".grip-a")!;
+
+      assert.isNull(rowA.getAttribute("tabindex"));
+      assert.strictEqual(grip.getAttribute("tabindex"), "0");
+      assert.strictEqual(grip.getAttribute("aria-roledescription"), "draggable");
+
+      key(rowA, " ");
+      yield* tick;
+      assert.strictEqual(textOf(app, ".announcer"), "");
+
+      key(grip, " ");
+      key(grip, "ArrowDown");
+      key(grip, " ");
+      yield* tick;
+      assert.deepStrictEqual(rowsOf(app), ["b", "a", "c"]);
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("a disabled item does not drag; the others still do", () =>
+    Effect.gen(function* () {
+      const app = yield* mounted({ locked: "b" });
+
+      assert.isNull(app.querySelector(".row-b")!.getAttribute("tabindex"));
+      pointer(app.querySelector(".row-b")!, "pointerdown", 10, 50);
+      pointer(document, "pointermove", 10, 110);
+      pointer(document, "pointerup", 10, 110);
+      yield* tick;
+      assert.deepStrictEqual(logOf(app), []);
+
+      pointer(app.querySelector(".row-a")!, "pointerdown", 10, 10);
+      pointer(document, "pointermove", 10, 110);
+      pointer(document, "pointerup", 10, 110);
+      yield* tick;
+      assert.deepStrictEqual(logOf(app), ["dropped a after c"]);
+    }).pipe(Effect.scoped),
+  );
+});
+
+describe("DragArea auto-scroll", () => {
+  // A pane 100 px tall showing the top of 1000 px of content.
+  const scrollablePane = (app: HTMLElement) => {
+    const pane = app.querySelector<HTMLElement>(".pane")!;
+    let top = 0;
+
+    pane.getBoundingClientRect = () => DOMRect.fromRect({ x: 0, y: 0, width: 200, height: 100 });
+    Object.defineProperty(pane, "scrollHeight", { value: 1000 });
+    Object.defineProperty(pane, "clientHeight", { value: 100 });
+    Object.defineProperty(pane, "scrollTop", {
+      get: () => top,
+      set: (value: number) => {
+        top = Math.max(0, Math.min(900, value));
+      },
+    });
+
+    return pane;
+  };
+
+  it.effect("scrolls a pane while the pointer holds near its bottom edge", () =>
+    Effect.gen(function* () {
+      const app = yield* mounted();
+      const pane = scrollablePane(app);
+
+      pointer(app.querySelector(".row-a")!, "pointerdown", 10, 10);
+      pointer(document, "pointermove", 10, 95);
+      yield* tick;
+      assert.isAbove(pane.scrollTop, 0);
+      pointer(document, "pointerup", 10, 95);
+      yield* tick;
+
+      const stopped = pane.scrollTop;
+
+      yield* tick;
+      assert.strictEqual(pane.scrollTop, stopped);
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("a row scrolled out of its pane does not take a drop there", () =>
+    Effect.gen(function* () {
+      const app = yield* mounted({ autoScroll: false });
+
+      scrollablePane(app);
+      // Row c spans 80 to 120; the pane shows 0 to 100, so 110 is outside it.
+      pointer(app.querySelector(".row-a")!, "pointerdown", 10, 10);
+      pointer(document, "pointermove", 10, 110);
+      pointer(document, "pointerup", 10, 110);
+      yield* tick;
+      assert.deepStrictEqual(logOf(app), ["put back a"]);
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("does not scroll with autoScroll off", () =>
+    Effect.gen(function* () {
+      const app = yield* mounted({ autoScroll: false });
+      const pane = scrollablePane(app);
+
+      pointer(app.querySelector(".row-a")!, "pointerdown", 10, 10);
+      pointer(document, "pointermove", 10, 95);
+      yield* tick;
+      assert.strictEqual(pane.scrollTop, 0);
+      pointer(document, "pointerup", 10, 95);
     }).pipe(Effect.scoped),
   );
 });

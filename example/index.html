@@ -7,13 +7,15 @@
     <style>
       body { font: 16px system-ui, sans-serif; margin: 2rem; color: #1f2328; }
       .board { max-width: 28rem; }
-      .tasks { list-style: none; padding: 0; margin: 0 0 1rem; }
-      .task { padding: .75rem 1rem; margin: 0 0 .5rem; border: 1px solid #d0d7de; border-radius: 8px; background: #fff; cursor: grab; user-select: none; touch-action: none; }
-      .task[data-dragging] { opacity: .4; }
-      .task:focus-visible { outline: 2px solid #0969da; outline-offset: 2px; }
+      .pane { height: 260px; overflow-y: auto; border: 1px solid #d0d7de; border-radius: 8px; padding: .5rem; margin: 0 0 1rem; }
+      .tasks { list-style: none; padding: 0; margin: 0; }
+      .task { display: flex; gap: .75rem; align-items: center; padding: .6rem .75rem; margin: 0 0 .5rem; border: 1px solid #d0d7de; border-radius: 8px; background: #fff; }
+      .grip { cursor: grab; touch-action: none; user-select: none; color: #656d76; padding: 0 .25rem; border-radius: 4px; }
+      .grip:focus-visible { outline: 2px solid #0969da; outline-offset: 2px; }
+      .task[data-dnd-disabled] .grip { cursor: not-allowed; opacity: .3; }
+      .task[data-dragging] { box-shadow: 0 8px 24px rgb(0 0 0 / .15); }
       .task[data-placement="before"] { box-shadow: 0 -3px 0 #0969da; }
       .task[data-placement="after"] { box-shadow: 0 3px 0 #0969da; }
-      .preview { opacity: .95; box-shadow: 0 8px 24px rgb(0 0 0 / .15); margin: 0; }
       .bin { padding: 1.5rem; border: 2px dashed #d0d7de; border-radius: 8px; text-align: center; }
       .bin[data-over] { border-color: #cf222e; background: #ffebe9; }
     </style>

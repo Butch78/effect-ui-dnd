@@ -41,7 +41,7 @@ import * as Effect from 'effect/Effect'
 import * as Queue from 'effect/Queue'
 import * as Schema from 'effect/Schema'
 import * as Stream from 'effect/Stream'
-import { Axis, movedPast, Target, targetAt, type Point, type ZoneBox } from './geometry.ts'
+import { Axis, clip, Collision, movedPast, scrollSpeed, Target, targetAt, type Point, type Rect, type ZoneBox } from './geometry.ts'
 
 // -- schemas -----------------------------------------------------------------
 
@@ -79,6 +79,12 @@ export const DragAreaProps = Schema.Struct({
   /** Spoken names of items and zones, by id. An id without one is read as is. */
   labels: Schema.optional(Schema.Record(Schema.String, Schema.String)),
   phrases: Schema.optional(DragAreaPhrases),
+  /** How a drag finds its target: `pointer` (default) or `closest`. */
+  collision: Schema.optional(Collision),
+  /** What moves with the pointer: a `preview` you draw (default), or the `item` itself. */
+  follow: Schema.optional(Schema.Literals(['preview', 'item'])),
+  /** Scroll the panes around the area, and the page, near their edges. Default true. */
+  autoScroll: Schema.optional(Schema.Boolean),
 })
 export interface DragAreaProps extends Schema.Schema.Type<typeof DragAreaProps> {}
 
@@ -102,6 +108,9 @@ const Drag = Schema.Struct({
   grabY: Schema.Finite,
   width: Schema.Finite,
   height: Schema.Finite,
+  // Where the item would be without the drag, for `follow: "item"`.
+  left: Schema.Finite,
+  top: Schema.Finite,
   over: Schema.NullOr(Target),
 })
 interface Drag extends Schema.Schema.Type<typeof Drag> {}
@@ -114,7 +123,13 @@ interface DragAreaModel extends Schema.Schema.Type<typeof DragAreaModel> {}
 
 const DragAreaMessage = UiSchema.TaggedEnum({
   PickedUp: { drag: Drag },
-  Moved: { x: Schema.Finite, y: Schema.Finite, over: Schema.NullOr(Target) },
+  Moved: {
+    x: Schema.Finite,
+    y: Schema.Finite,
+    left: Schema.Finite,
+    top: Schema.Finite,
+    over: Schema.NullOr(Target),
+  },
   Released: { over: Schema.NullOr(Target) },
   Cancelled: {},
 })
@@ -148,6 +163,11 @@ const ITEM = 'data-dnd-item'
 const ZONE = 'data-dnd-zone'
 const AXIS = 'data-dnd-axis'
 const ITEM_DISABLED = 'data-dnd-disabled'
+const HANDLE = 'data-dnd-handle'
+const HAS_HANDLE = 'data-dnd-has-handle'
+// Auto-scroll: pixels from an edge where scrolling starts, and the top speed per frame.
+const SCROLL_EDGE = 40
+const SCROLL_MAX = 20
 // A finger that moves this far before `pressDelay` is scrolling.
 const TOUCH_TOLERANCE = 5
 
@@ -160,8 +180,12 @@ const pointOf = (event: PointerEvent): Point => ({ x: event.clientX, y: event.cl
 
 const isPickKey = (key: string): boolean => key === ' ' || key === 'Enter'
 
-/** The enabled item `target` is in, within `root`. */
-const itemAt = (root: HTMLElement, target: EventTarget | null): Held | null => {
+/**
+ * The enabled item `target` grabs, within `root`: any part of an item, or for
+ * an item with a handle, only its handle. `grip` is the element that takes the
+ * keyboard: the handle, or the item itself.
+ */
+const itemAt = (root: HTMLElement, target: EventTarget | null): (Held & { readonly grip: HTMLElement }) | null => {
   if (!(target instanceof Element)) return null
 
   const element = target.closest<HTMLElement>(`[${ITEM}]`)
@@ -169,11 +193,115 @@ const itemAt = (root: HTMLElement, target: EventTarget | null): Held | null => {
 
   if (element === null || id === null || id === undefined || !root.contains(element)) return null
   if (element.hasAttribute(ITEM_DISABLED)) return null
+  if (!element.hasAttribute(HAS_HANDLE)) return { id, element, grip: element }
 
-  return { id, element }
+  const handle = target.closest<HTMLElement>(`[${HANDLE}]`)
+
+  return handle !== null && element.contains(handle) && handle.getAttribute(HANDLE) === id
+    ? { id, element, grip: handle }
+    : null
 }
 
-/** The zones in document order, without those inside the held item: an item cannot be dropped into itself. */
+/** Where `element` is laid out, without a transform the drag put on it. */
+const naturalRect = (element: HTMLElement): DOMRect => {
+  const { transform } = element.style
+
+  if (transform === '') return element.getBoundingClientRect()
+
+  element.style.transform = ''
+
+  const rect = element.getBoundingClientRect()
+
+  element.style.transform = transform
+
+  return rect
+}
+
+const zoneElement = (root: HTMLElement, id: string): HTMLElement | null =>
+  Array.from(root.querySelectorAll<HTMLElement>(`[${ZONE}]`)).find((element) => element.getAttribute(ZONE) === id) ?? null
+
+const scrolls = (value: string): boolean => value === 'auto' || value === 'scroll' || value === 'overlay'
+
+/**
+ * The panes that can scroll around `elements`, innermost first and each once,
+ * then the page. Called with the zone under the pointer and the dragged item,
+ * so a list inside the area scrolls as well as the page around it.
+ */
+const scrollPanesOf = (elements: ReadonlyArray<HTMLElement>): Array<HTMLElement> => {
+  const panes: Array<HTMLElement> = []
+
+  for (const start of elements) {
+    for (let element: HTMLElement | null = start; element !== null; element = element.parentElement) {
+      if (panes.includes(element)) continue
+
+      const style = getComputedStyle(element)
+      const vertical = scrolls(style.overflowY) && element.scrollHeight > element.clientHeight
+      const sideways = scrolls(style.overflowX) && element.scrollWidth > element.clientWidth
+
+      if (vertical || sideways) panes.push(element)
+    }
+  }
+
+  const page = elements[0]?.ownerDocument.scrollingElement
+
+  if (page instanceof HTMLElement && !panes.includes(page)) panes.push(page)
+
+  return panes
+}
+
+const paneRect = (pane: HTMLElement): DOMRect => {
+  const view = pane.ownerDocument.defaultView
+
+  return pane === pane.ownerDocument.scrollingElement && view !== null
+    ? DOMRect.fromRect({ x: 0, y: 0, width: view.innerWidth, height: view.innerHeight })
+    : pane.getBoundingClientRect()
+}
+
+/** Scrolls the innermost pane that can move as `point` asks. Whether anything moved. */
+const scrollTowards = (panes: ReadonlyArray<HTMLElement>, point: Point): boolean => {
+  for (const pane of panes) {
+    const speed = scrollSpeed(point, paneRect(pane), SCROLL_EDGE, SCROLL_MAX)
+
+    if (speed.x === 0 && speed.y === 0) continue
+
+    const { scrollLeft, scrollTop } = pane
+
+    pane.scrollTop = scrollTop + speed.y
+    pane.scrollLeft = scrollLeft + speed.x
+
+    if (pane.scrollTop !== scrollTop || pane.scrollLeft !== scrollLeft) return true
+  }
+
+  return false
+}
+
+const clips = (value: string): boolean =>
+  value === 'hidden' || value === 'clip' || value === 'auto' || value === 'scroll' || value === 'overlay'
+
+/**
+ * The part of `rect` a user can see: clipped by every pane around `element`
+ * that hides or scrolls its overflow. Null when none of it shows.
+ */
+const visiblePart = (element: HTMLElement, rect: Rect): Rect | null => {
+  let shown: Rect | null = rect
+
+  for (let pane = element.parentElement; pane !== null && shown !== null; pane = pane.parentElement) {
+    const style = getComputedStyle(pane)
+
+    if (!clips(style.overflowX) && !clips(style.overflowY)) continue
+
+    const { left, top, width, height } = pane.getBoundingClientRect()
+
+    shown = clip(shown, { left, top, width, height })
+  }
+
+  return shown
+}
+
+/**
+ * The zones in document order that show on screen, without those inside the
+ * held item: an item cannot be dropped into itself.
+ */
 const zonesIn = (root: HTMLElement, held: HTMLElement): Array<ZoneBox> =>
   Array.from(root.querySelectorAll<HTMLElement>(`[${ZONE}]`)).flatMap((element) => {
     const id = element.getAttribute(ZONE)
@@ -181,9 +309,14 @@ const zonesIn = (root: HTMLElement, held: HTMLElement): Array<ZoneBox> =>
 
     if (id === null || (element !== held && held.contains(element))) return []
 
-    const { left, top, width, height } = element.getBoundingClientRect()
+    // The held item measures where it sits in the list, not where a drag moved it.
+    const { left, top, width, height } = element === held ? naturalRect(element) : element.getBoundingClientRect()
+    const rect = { left, top, width, height }
+    const visible = visiblePart(element, rect)
 
-    return [{ id, rect: { left, top, width, height }, axis: axis === 'vertical' || axis === 'horizontal' ? axis : null }]
+    if (visible === null) return []
+
+    return [{ id, rect, visible, axis: axis === 'vertical' || axis === 'horizontal' ? axis : null }]
   })
 
 /**
@@ -221,6 +354,8 @@ const TrackDrag = Mount.makeStream(
       disabled: Schema.Boolean,
       distance: Schema.Finite,
       pressDelay: Schema.Finite,
+      collision: Collision,
+      autoScroll: Schema.Boolean,
       dragging: Schema.Boolean,
     },
   },
@@ -238,13 +373,50 @@ const TrackDrag = Mount.makeStream(
         let press: Press | null = null
         let pointerDrag: { readonly pointerId: number; readonly held: Held } | null = null
         let keyboard: { readonly held: Held; readonly stops: Array<Target>; index: number } | null = null
+        // The pointer's last place in a drag, and the auto-scroll frame waiting to run.
+        let last: Point = { x: 0, y: 0 }
+        let frame: number | undefined
+        const view = document.defaultView
         // The document's listeners for the press or drag under way.
         let listening: AbortController | undefined
         const send = (message: DragAreaMessage) => {
           Queue.offerUnsafe(queue, message)
         }
 
+        const targetFor = (point: Point, held: HTMLElement) =>
+          targetAt(point, zonesIn(node, held), settings.collision)
+
+        const report = (point: Point, held: Held) => {
+          const natural = naturalRect(held.element)
+
+          send(
+            DragAreaMessage.Moved({
+              ...point,
+              left: natural.left,
+              top: natural.top,
+              over: targetFor(point, held.element),
+            }),
+          )
+        }
+
+        // While the pointer holds near an edge, scroll a frame at a time and
+        // find the target again under the content that moved.
+        const autoScroll = () => {
+          frame = undefined
+
+          if (pointerDrag === null || !settings.autoScroll || view === null) return
+          const over = targetFor(last, pointerDrag.held.element)
+          const zone = over === null ? null : zoneElement(node, over.zone)
+          const around = zone === null ? [pointerDrag.held.element] : [zone, pointerDrag.held.element]
+
+          if (scrollTowards(scrollPanesOf(around), last)) report(last, pointerDrag.held)
+
+          frame = view.requestAnimationFrame(autoScroll)
+        }
+
         const endPress = () => {
+          if (frame !== undefined) view?.cancelAnimationFrame(frame)
+          frame = undefined
           if (press?.timer !== undefined) clearTimeout(press.timer)
           if (pointerDrag !== null && node.hasPointerCapture?.(pointerDrag.pointerId) === true) {
             node.releasePointerCapture(pointerDrag.pointerId)
@@ -273,6 +445,8 @@ const TrackDrag = Mount.makeStream(
           const rect = current.held.element.getBoundingClientRect()
 
           pointerDrag = { pointerId: current.pointerId, held: current.held }
+          last = point
+          document.getSelection()?.removeAllRanges()
           press = null
           node.setPointerCapture?.(current.pointerId)
           send(
@@ -286,10 +460,13 @@ const TrackDrag = Mount.makeStream(
                 grabY: current.origin.y - rect.top,
                 width: rect.width,
                 height: rect.height,
-                over: targetAt(point, zonesIn(node, current.held.element)),
+                left: rect.left,
+                top: rect.top,
+                over: targetFor(point, current.held.element),
               },
             }),
           )
+          if (view !== null && frame === undefined) frame = view.requestAnimationFrame(autoScroll)
         }
 
         const onMove = (event: PointerEvent) => {
@@ -297,7 +474,8 @@ const TrackDrag = Mount.makeStream(
 
           if (pointerDrag !== null && event.pointerId === pointerDrag.pointerId) {
             event.preventDefault()
-            send(DragAreaMessage.Moved({ ...point, over: targetAt(point, zonesIn(node, pointerDrag.held.element)) }))
+            last = point
+            report(point, pointerDrag.held)
 
             return
           }
@@ -315,7 +493,7 @@ const TrackDrag = Mount.makeStream(
         const onUp = (event: PointerEvent) => {
           if (pointerDrag !== null && event.pointerId === pointerDrag.pointerId) {
             const point = pointOf(event)
-            const over = targetAt(point, zonesIn(node, pointerDrag.held.element))
+            const over = targetFor(point, pointerDrag.held.element)
 
             swallowNextClick()
             endPress()
@@ -340,6 +518,16 @@ const TrackDrag = Mount.makeStream(
           event.preventDefault()
           endPress()
           send(DragAreaMessage.Cancelled())
+        }
+
+        // The browser's own drag of selected text or an image would cancel ours.
+        const blockNativeDrag = (event: Event) => {
+          event.preventDefault()
+        }
+
+        // Nor may a drag select text as it goes.
+        const blockSelection = (event: Event) => {
+          if (pointerDrag !== null) event.preventDefault()
         }
 
         // A touch drag must not scroll the page under it.
@@ -368,6 +556,8 @@ const TrackDrag = Mount.makeStream(
           document.addEventListener('pointercancel', onCancel, { signal })
           document.addEventListener('keydown', onEscape, { signal })
           document.addEventListener('touchmove', holdPage, { signal, passive: false })
+          document.addEventListener('dragstart', blockNativeDrag, { signal, capture: true })
+          document.addEventListener('selectstart', blockSelection, { signal, capture: true })
 
           if (delayed) {
             current.timer = setTimeout(() => {
@@ -380,7 +570,7 @@ const TrackDrag = Mount.makeStream(
           if (keyboard === null || keyboard.stops.length === 0) return
 
           keyboard.index = Math.min(keyboard.stops.length - 1, Math.max(0, keyboard.index + by))
-          send(DragAreaMessage.Moved({ x: 0, y: 0, over: keyboard.stops[keyboard.index] ?? null }))
+          send(DragAreaMessage.Moved({ x: 0, y: 0, left: 0, top: 0, over: keyboard.stops[keyboard.index] ?? null }))
         }
 
         const onKey = (event: KeyboardEvent) => {
@@ -409,8 +599,8 @@ const TrackDrag = Mount.makeStream(
 
           const held = itemAt(node, event.target)
 
-          // Only a key on the item itself: a button inside the item keeps its keys.
-          if (held === null || held.element !== event.target) return
+          // Only a key on the item itself, or its handle: a button inside keeps its keys.
+          if (held === null || held.grip !== event.target) return
 
           event.preventDefault()
 
@@ -428,6 +618,8 @@ const TrackDrag = Mount.makeStream(
                 grabY: 0,
                 width: 0,
                 height: 0,
+                left: 0,
+                top: 0,
                 over: stops[index] ?? null,
               },
             }),
@@ -488,6 +680,22 @@ const previewStyle = (drag: Drag): string =>
     'z-index:2147483647',
   ].join(';')
 
+// The item itself, moved to follow the pointer from where it sits.
+const followStyle = (drag: Drag): string =>
+  [
+    `transform:translate3d(${drag.x - drag.grabX - drag.left}px,${drag.y - drag.grabY - drag.top}px,0)`,
+    'position:relative',
+    'z-index:1',
+    'pointer-events:none',
+  ].join(';')
+
+/** Options for one item: a drag handle inside it, or the item alone disabled. */
+export interface ItemOptions {
+  /** Drag only from the item's `handle` part, which also takes focus. */
+  readonly handle?: boolean
+  readonly disabled?: boolean
+}
+
 const finished = (props: DragAreaProps, item: string, announcement: string): DragAreaModel => ({
   drag: null,
   announcement: phrase(announcement, props, item),
@@ -517,14 +725,14 @@ export const DragArea = Html.component({
       $.props.disabled === true || $.model.drag !== null
         ? $.model
         : $.set({ drag, announcement: phrase(phrasesOf($.props).pickedUp, $.props, drag.item) }),
-    Moved: ($, { x, y, over }) => {
+    Moved: ($, { x, y, left, top, over }) => {
       const { drag } = $.model
 
       if (drag === null) return $.model
 
       const announcement = sameTarget(drag.over, over) ? $.model.announcement : overPhrase($.props, drag.item, over)
 
-      return $.set({ drag: { ...drag, x, y, over }, announcement })
+      return $.set({ drag: { ...drag, x, y, left, top, over }, announcement })
     },
     Released: ($, { over }) => {
       const { drag } = $.model
@@ -555,6 +763,15 @@ export const DragArea = Html.component({
     const { drag } = model
     const over = drag?.over ?? null
     const instructionsId = p.id('instructions')
+    const follow = p.props.follow ?? 'preview'
+    // What makes an element the one a user grabs: focus, and what a screen reader says.
+    const grabAttrs = (id: string, off: boolean) => ({
+      tabindex: off ? undefined : '0',
+      'aria-roledescription': 'draggable',
+      'aria-describedby': instructionsId,
+      'aria-pressed': drag?.item === id ? 'true' : undefined,
+      'aria-disabled': off ? 'true' : undefined,
+    })
 
     return {
       dragging: drag === null ? null : drag.item,
@@ -568,21 +785,30 @@ export const DragArea = Html.component({
               disabled,
               distance: p.props.distance ?? 8,
               pressDelay: p.props.pressDelay ?? 0,
+              collision: p.props.collision ?? 'pointer',
+              autoScroll: p.props.autoScroll ?? true,
               dragging: drag !== null,
             }),
           ),
       ),
-      item: p.part((b, id: string) =>
-        b.attrs({
-          [ITEM]: id,
-          [ITEM_DISABLED]: flag(disabled),
-          tabindex: disabled ? undefined : '0',
-          'aria-roledescription': 'draggable',
-          'aria-describedby': instructionsId,
-          'aria-pressed': drag?.item === id ? 'true' : undefined,
-          'data-dragging': flag(drag?.item === id),
-        }),
-      ),
+      item: p.part((b, id: string, options?: ItemOptions) => {
+        const off = disabled || options?.disabled === true
+        const handled = options?.handle === true
+        const moved = follow === 'item' && drag?.via === 'pointer' && drag.item === id
+
+        return b
+          .attrs({
+            [ITEM]: id,
+            [ITEM_DISABLED]: flag(off),
+            [HAS_HANDLE]: flag(handled),
+            'data-dragging': flag(drag?.item === id),
+            ...(handled ? {} : grabAttrs(id, off)),
+          })
+          .forward((node) =>
+            moved ? node.attr('style', withStyle(node.elementAttrs.style, followStyle(drag))) : node,
+          )
+      }),
+      handle: p.part((b, id: string) => b.attrs({ [HANDLE]: id, ...grabAttrs(id, disabled) })),
       zone: p.part((b, id: string, axis?: Axis) =>
         b.attrs({
           [ZONE]: id,
